@@ -1,16 +1,18 @@
-import { deserialize, serialize } from 'node:v8';
+import { deserialize } from 'node:v8';
 import { isDeepStrictEqual } from 'node:util';
 import { createHash } from 'node:crypto';
 import type { FileNode } from './types/module-graph.ts';
 import type { ResolveModule, ResolvedModule } from './typescript/ast-nodes.ts';
 import type { MainOptions } from './util/create-options.ts';
 import { FileEntryCache } from './util/file-entry-cache.ts';
+import { serializeGraphCache } from './util/serialize-graph-cache.ts';
 import { version } from './version.ts';
 
+type Variants = { full?: Uint8Array; skipped?: Uint8Array };
 type Analysis = { file: FileNode; resolutions: Map<string, ResolvedModule | undefined> };
 
 export class GraphCacheConsultant {
-  private cache: FileEntryCache<Uint8Array> | undefined;
+  private cache: FileEntryCache<Variants> | undefined;
 
   private options: MainOptions;
 
@@ -23,9 +25,10 @@ export class GraphCacheConsultant {
     this.cache = new FileEntryCache(
       `analysis-js-${version}`,
       this.options.cacheLocation,
-      serialize,
+      serializeGraphCache,
       true,
-      createHash('sha256').update(context).digest('hex')
+      createHash('sha256').update(context).digest('hex'),
+      true
     );
   }
 
@@ -35,14 +38,14 @@ export class GraphCacheConsultant {
 
   getCachedFile(filePath: string, skipExports: boolean, resolve: ResolveModule): FileNode | undefined {
     const descriptor = this.cache?.getFileDescriptor(filePath);
-    const bytes = !descriptor?.changed && descriptor?.meta?.data;
+    const bytes = !descriptor?.changed && descriptor?.meta?.data?.[skipExports ? 'skipped' : 'full'];
     if (!bytes) return;
     try {
       const analysis: Analysis = deserialize(bytes);
       for (const [specifier, previous] of analysis.resolutions) {
         if (!isDeepStrictEqual(resolve(specifier, filePath), previous)) return;
       }
-      return analysis.file.skipExports === skipExports ? analysis.file : undefined;
+      return analysis.file;
     } catch {
       this.removeEntry(filePath);
     }
@@ -50,7 +53,9 @@ export class GraphCacheConsultant {
 
   setCachedFile(filePath: string, file: FileNode, resolutions: Analysis['resolutions']) {
     if (!this.cache) return;
-    this.cache.setFileData(filePath, serialize({ file, resolutions }));
+    const variants = this.cache.getFileDescriptor(filePath).meta?.data;
+    const bytes = serializeGraphCache({ file, resolutions });
+    this.cache.setFileData(filePath, { ...variants, [file.skipExports ? 'skipped' : 'full']: bytes });
   }
 
   removeEntry(filePath: string) {

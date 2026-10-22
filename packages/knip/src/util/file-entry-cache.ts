@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { deserialize, serialize } from 'node:v8';
 import { debugLog } from './debug.ts';
+import { FileEntryCacheStorage } from './file-entry-cache-storage.ts';
 import { isDirectory, isFile } from './fs.ts';
 import { timerify } from './Performance.ts';
 import { isAbsolute, resolve } from './path.ts';
@@ -18,6 +19,7 @@ export type CacheEnvelope<T> = {
   version: 1;
   context: string;
   entries: Map<string, MetaData<T>>;
+  removed?: string[];
 };
 
 export type CacheSerializer<T> = (cache: Map<string, MetaData<T>> | CacheEnvelope<T>) => Uint8Array;
@@ -30,9 +32,9 @@ export type FileDescriptor<T> = {
   meta?: MetaData<T>;
 };
 
-const createCache = (filePath: string): unknown => {
+const createCache = (filePath: string, storage?: FileEntryCacheStorage<unknown>): unknown => {
   try {
-    return deserialize(fs.readFileSync(filePath));
+    return storage ? storage.read(filePath) : deserialize(fs.readFileSync(filePath));
   } catch (_err) {
     debugLog('*', `Error reading cache from ${filePath}`);
   }
@@ -48,20 +50,26 @@ export class FileEntryCache<T> {
   private immutable: boolean;
   private context: string | undefined;
   private dirty = true;
+  private storage: FileEntryCacheStorage<T> | undefined;
+  private changedEntries = new Set<string>();
+  private removedEntries = new Set<string>();
+  private replace = true;
 
   constructor(
     cacheId: string,
     _path: string,
     serializeCache: CacheSerializer<T> = serialize,
     immutable = false,
-    context?: string
+    context?: string,
+    incremental = false
   ) {
     this.filePath = path.resolve(_path, cacheId);
     this.serializeCache = serializeCache;
     this.immutable = immutable;
     this.context = context;
+    if (incremental && immutable && context !== undefined) this.storage = new FileEntryCacheStorage();
     if (isFile(this.filePath)) {
-      const data = create(this.filePath);
+      const data = create(this.filePath, this.storage);
       if (context === undefined && data instanceof Map) {
         this.cache = data;
         this.dirty = false;
@@ -78,6 +86,7 @@ export class FileEntryCache<T> {
       ) {
         this.cache = data.entries;
         this.dirty = false;
+        this.replace = false;
       }
     }
   }
@@ -129,6 +138,7 @@ export class FileEntryCache<T> {
 
     if (changed) {
       this.dirty = true;
+      this.changedEntries.add(filePath);
     }
     const fd: FileDescriptor<T> = { key: filePath, changed, meta };
     this.normalizedEntries.set(filePath, fd);
@@ -141,6 +151,7 @@ export class FileEntryCache<T> {
     if (fd.meta.data !== data) {
       fd.meta.data = data;
       this.dirty = true;
+      this.changedEntries.add(fd.key);
     }
     fd.changed = false;
   }
@@ -150,6 +161,8 @@ export class FileEntryCache<T> {
     this.normalizedEntries.delete(entryName);
     if (this.cache.delete(entryName)) {
       this.dirty = true;
+      this.changedEntries.delete(entryName);
+      this.removedEntries.add(entryName);
     }
   }
 
@@ -158,6 +171,9 @@ export class FileEntryCache<T> {
     if (this.cache.size > 0) {
       this.cache.clear();
       this.dirty = true;
+      this.replace = true;
+      this.changedEntries.clear();
+      this.removedEntries.clear();
     }
   }
 
@@ -168,8 +184,20 @@ export class FileEntryCache<T> {
       if (!isDirectory(dir)) fs.mkdirSync(dir, { recursive: true });
       const value: Map<string, MetaData<T>> | CacheEnvelope<T> =
         this.context === undefined ? this.cache : { version: 1, context: this.context, entries: this.cache };
-      fs.writeFileSync(this.filePath, this.serializeCache(value));
+      if (this.storage && !(value instanceof Map))
+        this.storage.write(
+          this.filePath,
+          value,
+          this.changedEntries,
+          this.removedEntries,
+          this.replace,
+          this.serializeCache
+        );
+      else fs.writeFileSync(this.filePath, this.serializeCache(value));
       this.dirty = false;
+      this.replace = false;
+      this.changedEntries.clear();
+      this.removedEntries.clear();
     } catch (_err) {
       debugLog('*', `Error writing cache to ${this.filePath}`);
     }
