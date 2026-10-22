@@ -28,7 +28,9 @@ export async function knipRestartReloadsLocalVersion() {
   const folder = vscode.workspace.workspaceFolders?.[0];
   assert.ok(folder, 'Fixture workspace should be open');
   const fileUri = vscode.Uri.joinPath(folder.uri, 'index.js');
-  const initialVersion = 'knip-version-1.0.0';
+  const packageJsonPath = vscode.Uri.joinPath(folder.uri, 'node_modules/knip/package.json').fsPath;
+  const pkg = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
+  const initialVersion = `knip-version-${pkg.version}`;
   const updatedVersion = 'knip-version-2.0.0';
   const getKnipDiagnosticMessages = () =>
     vscode.languages
@@ -38,8 +40,6 @@ export async function knipRestartReloadsLocalVersion() {
 
   await waitFor(() => getKnipDiagnosticMessages().some(message => message.includes(initialVersion)));
 
-  const packageJsonPath = vscode.Uri.joinPath(folder.uri, 'node_modules/knip/package.json').fsPath;
-  const pkg = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
   writeFileSync(packageJsonPath, JSON.stringify({ ...pkg, version: '2.0.0' }));
 
   await vscode.commands.executeCommand('knip.restart');
@@ -50,4 +50,24 @@ export async function knipRestartReloadsLocalVersion() {
       !messages.some(message => message.includes(initialVersion))
     );
   }, 10);
+}
+
+export async function knipConfigurationChangeRestartsServer() {
+  const folder = vscode.workspace.workspaceFolders?.[0];
+  assert.ok(folder);
+  const fileUri = vscode.Uri.joinPath(folder.uri, 'index.js');
+  await waitFor(() => vscode.languages.getDiagnostics(fileUri).some(diagnostic => diagnostic.source === 'knip'));
+  const localPackage = vscode.Uri.joinPath(folder.uri, 'node_modules/knip/package.json').fsPath;
+  const pkg = JSON.parse(readFileSync(localPackage, 'utf8'));
+  writeFileSync(localPackage, JSON.stringify({ ...pkg, version: '1.1.0' }));
+  const manifest = vscode.Uri.joinPath(folder.uri, 'package.json').fsPath;
+  const content = JSON.parse(readFileSync(manifest, 'utf8'));
+  writeFileSync(manifest, JSON.stringify({ ...content, description: 'trigger configuration reload' }));
+  await waitFor(
+    () =>
+      vscode.languages
+        .getDiagnostics(fileUri)
+        .some(diagnostic => diagnostic.source === 'knip' && diagnostic.message.includes('knip-version-1.1.0')),
+    10
+  );
 }

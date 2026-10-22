@@ -3,6 +3,8 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  NOTIFICATION_MODULE_GRAPH_BUILT,
+  NOTIFICATION_RESTART_REQUIRED,
   REQUEST_FILE_NODE,
   REQUEST_PACKAGE_JSON,
   REQUEST_RESTART,
@@ -199,6 +201,24 @@ export class Extension {
 
     const client = new LanguageClient(`knip-${folder.name}`, `Knip (${folder.name})`, serverOptions, clientOptions);
     this.#clients.set(key, client);
+
+    let restarting = false;
+    this.#context.subscriptions.push(
+      client.onNotification(NOTIFICATION_MODULE_GRAPH_BUILT, () => {
+        this.#packageJsonCache = undefined;
+        this.#refresh();
+      }),
+      client.onNotification(NOTIFICATION_RESTART_REQUIRED, async () => {
+        if (restarting || this.#clients.get(key) !== client) return;
+        restarting = true;
+        this.#packageJsonCache = undefined;
+        try {
+          await client.restart();
+        } finally {
+          restarting = false;
+        }
+      })
+    );
 
     await client.start();
   }
@@ -771,11 +791,23 @@ export class Extension {
       this.#logManagedWorkspaces();
     });
 
+    const configurationHandler = vscode.workspace.onDidChangeConfiguration(async event => {
+      for (const folder of vscode.workspace.workspaceFolders ?? []) {
+        if (!event.affectsConfiguration('knip', folder.uri)) continue;
+        await this.#stopClientForFolder(folder);
+        await this.#startClientForFolder(folder);
+      }
+      this.#packageJsonCache = undefined;
+      this.#updateToolsClient();
+      await this.#refresh();
+    });
+
     this.#context.subscriptions.push(
       selectionHandler,
       editorHandler,
       diagnosticsHandler,
       documentHandler,
+      configurationHandler,
       workspaceFoldersHandler
     );
   }

@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { createOptions, createSession, KNIP_CONFIG_LOCATIONS } from 'knip/session';
+import { createOptions, createPersistentSession, createSession, KNIP_CONFIG_LOCATIONS } from 'knip/session';
 import { FileChangeType, ProposedFeatures, TextDocuments } from 'vscode-languageserver';
 import { CodeActionKind, createConnection } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
@@ -16,6 +16,7 @@ import {
 import {
   DEFAULT_JSDOC_TAGS,
   NOTIFICATION_MODULE_GRAPH_BUILT,
+  NOTIFICATION_RESTART_REQUIRED,
   REQUEST_FILE_NODE,
   REQUEST_PACKAGE_JSON,
   REQUEST_RESTART,
@@ -114,6 +115,8 @@ export class LanguageServer {
   /** @type {Config | undefined} */
   initConfig;
 
+  revision = 0;
+
   constructor() {
     this.connection = createConnection(ProposedFeatures.all);
     this.documents = new TextDocuments(TextDocument);
@@ -177,6 +180,7 @@ export class LanguageServer {
     this.connection.onCodeAction(params => this.handleCodeAction(params));
 
     this.connection.onDidChangeWatchedFiles(params => this.handleFileChanges(params));
+    this.connection.onDidChangeConfiguration(() => this.requestProcessRestart());
   }
 
   /** @returns {Promise<Config>} */
@@ -239,11 +243,12 @@ export class LanguageServer {
     this.connection.console.log(
       `Using bundled knip${readKnipVersion(createRequire(import.meta.url).resolve('knip/session'))}`
     );
-    return { createOptions, createSession };
+    return { createOptions, createPersistentSession, createSession };
   }
 
   async start() {
     if (this.session) return;
+    const revision = ++this.revision;
 
     try {
       const config = await this.getConfig();
@@ -256,13 +261,20 @@ export class LanguageServer {
         : undefined;
 
       this.connection.console.log('Creating options');
-      const options = await knip.createOptions({ cwd: this.cwd, isSession: true, args: { config: configFilePath } });
-      this.rules = options.rules;
+      const loadOptions = async () => {
+        const options = await knip.createOptions({ cwd: this.cwd, isSession: true, args: { config: configFilePath } });
+        this.rules = options.rules;
+        return options;
+      };
 
       this.connection.console.log('Building module graph...');
       const start = Date.now();
-      const session = await knip.createSession(options);
+      const session = knip.createPersistentSession
+        ? await knip.createPersistentSession(loadOptions)
+        : await knip.createSession(await loadOptions());
       this.connection.console.log(`Finished building module graph (${Date.now() - start}ms)`);
+
+      if (revision !== this.revision) return;
 
       this.session = session;
       this.publishDiagnostics(this.buildDiagnostics(session.getIssues().issues, config, this.rules));
@@ -273,15 +285,23 @@ export class LanguageServer {
   }
 
   stop() {
+    this.revision++;
     this.session = undefined;
     this.fileCache = undefined;
+    this.packageJsonCache = undefined;
+    this.cycleDiagnostics.clear();
     for (const uri of this.published) this.connection.sendDiagnostics({ uri, diagnostics: [] });
     this.published.clear();
   }
 
-  restart() {
+  async restart() {
     this.stop();
-    this.start();
+    await this.start();
+  }
+
+  requestProcessRestart() {
+    this.stop();
+    this.connection.sendNotification(NOTIFICATION_RESTART_REQUIRED);
   }
 
   getResults() {
@@ -297,6 +317,7 @@ export class LanguageServer {
     this.fileCache = undefined;
     this.packageJsonCache = undefined;
     if (!this.session) return;
+    const session = this.session;
 
     const cwd = this.cwd ?? process.cwd();
 
@@ -306,7 +327,7 @@ export class LanguageServer {
       if (!change.uri.startsWith('file:')) continue;
       const filePath = fileURLToPath(change.uri);
       if (!filePath.startsWith(cwd) || filePath.includes('/.git/')) continue;
-      if (RESTART_FOR.has(path.basename(change.uri))) return this.restart();
+      if (RESTART_FOR.has(path.basename(filePath))) return this.requestProcessRestart();
       const type = FILE_CHANGE_TYPES.get(change.type);
       if (!type) continue;
       changes.push({ type, filePath });
@@ -315,9 +336,12 @@ export class LanguageServer {
     if (changes.length === 0) return;
 
     try {
-      const result = await this.session.handleFileChanges(changes);
+      const result = await session.handleFileChanges(changes);
 
-      if (!result) return;
+      if (!result || this.session !== session) return;
+      this.fileCache = undefined;
+      this.packageJsonCache = undefined;
+      this.cycleDiagnostics.clear();
 
       this.connection.console.log(
         `Module graph updated (${Math.floor(result.duration)}ms • ${(result.mem / 1024 / 1024).toFixed(2)}M)`
@@ -325,7 +349,11 @@ export class LanguageServer {
 
       const config = await this.getConfig();
       this.publishDiagnostics(this.buildDiagnostics(this.session.getIssues().issues, config, this.rules));
+      this.connection.sendNotification(NOTIFICATION_MODULE_GRAPH_BUILT, { duration: result.duration });
     } catch (_error) {
+      if (_error instanceof Error && 'reason' in _error) {
+        if (_error.reason === 'restart' || _error.reason === 'configuration') return this.requestProcessRestart();
+      }
       this.connection.console.error(`Error handling file changes: ${_error}`);
     }
   }

@@ -24,6 +24,13 @@ Executable plugin configurations are evaluated on each CLI run because their
 results can depend on the environment or files outside the configuration module.
 This adds work compared with reusing potentially stale configuration.
 
+Watch and editor sessions reanalyze changed source files without rebuilding
+reachability when their imports, export usage, and analysis policy stay the
+same. Diagnostics and source locations are refreshed. Structural changes use a
+fresh graph, and executable configuration changes require a new process. The VS
+Code extension restarts its language server automatically for these changes; CLI
+watch reports that a restart is needed.
+
 ## Ignoring files
 
 Files matching the `ignore` patterns are not excluded from the analysis. They're

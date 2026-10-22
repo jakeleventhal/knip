@@ -1,6 +1,7 @@
 /* oxlint-disable no-console */
 import { fix } from './IssueFixer.ts';
 import { run } from './run.ts';
+import { watchSession } from './session/watch.ts';
 import type { IssueType } from './types/issues.ts';
 import parseArgs, { helpText, type ParsedCLIArgs } from './util/cli-arguments.ts';
 import { createOptions } from './util/create-options.ts';
@@ -44,6 +45,11 @@ const main = async () => {
     }
 
     const options = await createOptions({ args });
+
+    if (options.isWatch) {
+      await watchSession(options, () => createOptions({ args }));
+      return;
+    }
 
     const { results } = await run(options);
 
