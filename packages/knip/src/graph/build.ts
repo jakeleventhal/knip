@@ -603,7 +603,14 @@ export async function build({
     }
   };
 
-  principal.init();
+  principal.init(
+    JSON.stringify([
+      { ...analyzeOpts, isReportExports: undefined },
+      [...registeredVisitorPlugins],
+      workspaces.map(workspace => [workspace.name, workspace.config.ignoreExportsUsedInFile]),
+      [...principal.compilers.keys()],
+    ])
+  );
 
   streamer.cast('Analyzing source files');
 
@@ -629,7 +636,7 @@ export async function build({
   }
   for (const filePath of principal.entryPaths) entryPaths.add(filePath);
 
-  principal.reconcileCache(graph);
+  principal.reconcileCache();
 
   perfObserver.addMemoryMark('build');
 

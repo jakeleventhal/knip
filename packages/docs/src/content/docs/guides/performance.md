@@ -15,6 +15,12 @@ Use the `--debug` and `--performance` flags to find potential bottlenecks.
 
 Use `--cache` to speed up consecutive runs.
 
+Unchanged analysis records are reused after validating import resolutions and
+analysis settings. Executable plugin configurations are evaluated on each CLI
+run because their results can depend on the environment or files outside the
+configuration module. This adds work compared with reusing potentially stale
+configuration.
+
 ## Ignoring files
 
 Files matching the `ignore` patterns are not excluded from the analysis. They're

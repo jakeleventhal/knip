@@ -44,6 +44,7 @@ import { formatCauseMessage } from './util/errors.ts';
 import { logError } from './util/log.ts';
 import { loadConfigForPlugin } from './util/plugin.ts';
 import { ELLIPSIS } from './util/string.ts';
+import { fileFingerprint, fingerprintsMatch } from './util/file-fingerprint.ts';
 
 type WorkspaceManagerOptions = {
   name: string;
@@ -64,7 +65,12 @@ type WorkspaceManagerOptions = {
   options: MainOptions;
 };
 
-type CacheItem = { resolveConfig?: Input[]; resolveFromAST?: Input[]; configFile?: Input };
+type CacheItem = {
+  resolveConfig?: Input[];
+  resolveFromAST?: Input[];
+  configFile?: Input;
+  reads?: Map<string, string | undefined>;
+};
 
 const nullConfig: EnsuredPluginConfiguration = { config: null, entry: null, project: null };
 
@@ -135,7 +141,20 @@ export class WorkspaceWorker {
 
     this.options = options;
 
-    this.cache = new CacheConsultant(`plugins-${name}`, options);
+    this.cache = new CacheConsultant(
+      `plugins-${name}`,
+      options,
+      JSON.stringify([
+        dir,
+        config,
+        manifest,
+        rootManifest,
+        [...dependencies],
+        enabledPluginsInAncestors,
+        options.isProduction,
+        options.isStrict,
+      ])
+    );
 
     this.getConfigurationHints = timerify(this.getConfigurationHints.bind(this), 'getConfigurationHints');
   }
@@ -424,10 +443,10 @@ export class WorkspaceWorker {
         seenConfigFiles.add(configFilePath);
 
         const isManifest = basename(configFilePath) === 'package.json';
-        const fd = isManifest ? undefined : this.cache.getFileDescriptor(configFilePath);
+        const fd = isManifest || plugin.resolveConfig ? undefined : this.cache.getFileDescriptor(configFilePath);
 
         const data = fd?.changed ? undefined : fd?.meta?.data?.[pluginName];
-        if (data) {
+        if (data?.reads && fingerprintsMatch(data.reads)) {
           if (data.resolveConfig) for (const id of data.resolveConfig) addInput(id, configFilePath);
           if (data.resolveFromAST) for (const id of data.resolveFromAST) addInput(id, configFilePath);
           if (data.configFile) addInput(data.configFile);
@@ -453,7 +472,8 @@ export class WorkspaceWorker {
           configFileName: basename(configFilePath),
         };
 
-        const cache: CacheItem = {};
+        const reads = new Map<string, string | undefined>();
+        const cache: CacheItem = { reads };
         let hasLoadConfigError = false;
 
         if (plugin.resolveConfig) {
@@ -493,7 +513,13 @@ export class WorkspaceWorker {
         }
 
         if (plugin.resolveFromAST && parsed) {
-          const resolveASTOpts = { ...resolveOpts, readFile: this.readRawFile };
+          const resolveASTOpts = {
+            ...resolveOpts,
+            readFile: (filePath: string) => {
+              reads.set(filePath, fileFingerprint(filePath));
+              return this.readRawFile(filePath);
+            },
+          };
           const inputs = plugin.resolveFromAST(parsed.program, resolveASTOpts);
           for (const input of inputs) addInput(input, configFilePath);
           cache.resolveFromAST = inputs;
@@ -506,7 +532,7 @@ export class WorkspaceWorker {
           }
           storeConfigFilePath(pluginName, toConfig(pluginName, configFilePath));
 
-          if (hasLoadConfigError) {
+          if (hasLoadConfigError || !fingerprintsMatch(reads)) {
             this.cache.removeEntry(configFilePath);
           } else if (fd?.meta) {
             fd.meta.data = { ...fd.meta.data, [pluginName]: cache };

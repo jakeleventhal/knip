@@ -29,7 +29,7 @@ test('Plugin config that throws on load exits 2 even with --no-exit-code', () =>
   assert.equal(result.status, 2);
 });
 
-test('Plugin config load errors are not cached, and recovery is cached', () => {
+test('Plugin config load errors recover and executable configuration is reevaluated', () => {
   const cacheLocation = mkdtempSync(join(tmpdir(), 'knip-cache-'));
   const fixtureCopy = mkdtempSync(join(tmpdir(), 'knip-fixture-'));
   cpSync(cwd, fixtureCopy, { recursive: true });
@@ -51,7 +51,7 @@ test('Plugin config load errors are not cached, and recovery is cached', () => {
     assert.doesNotMatch(recovered.stderr, /^ERROR: Error loading/m);
 
     const cached = exec(command, { cwd: fixtureCopy });
-    assert.doesNotMatch(cached.stderr, /bootstrap-loaded/);
+    assert.match(cached.stderr, /bootstrap-loaded/);
     assert.doesNotMatch(cached.stderr, /^ERROR: Error loading/m);
   } finally {
     rmSync(cacheLocation, { recursive: true, force: true });

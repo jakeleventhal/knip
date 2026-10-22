@@ -1,8 +1,9 @@
 import type { ParseResult, Visitor } from 'oxc-parser';
 import { extractSpecifiers } from './typescript/follow-imports.ts';
 import { _parseFile } from './typescript/ast-nodes.ts';
-import { CacheConsultant } from './CacheConsultant.ts';
+import { GraphCacheConsultant } from './GraphCacheConsultant.ts';
 import type { Compiler, Compilers } from './compilers/types.ts';
+import { isSourceOnlyCompiler } from './compilers/index.ts';
 import { DEFAULT_EXTENSIONS } from './constants.ts';
 import type {
   GetImportsAndExportsOptions,
@@ -10,7 +11,7 @@ import type {
   PluginVisitorContext,
   PluginVisitorObject,
 } from './types/config.ts';
-import type { FileNode, ModuleGraph } from './types/module-graph.ts';
+import type { FileNode } from './types/module-graph.ts';
 import type { Paths } from './types/project.ts';
 import { _getImportsAndExports } from './typescript/get-imports-and-exports.ts';
 import { createBunShellVisitor } from './typescript/visitors/script-visitors.ts';
@@ -52,7 +53,7 @@ export class ProjectPrincipal {
   private tsConfigFile: string | undefined;
   private extensions = new Set(DEFAULT_EXTENSIONS);
 
-  cache: CacheConsultant<FileNode>;
+  cache: GraphCacheConsultant;
   toSourceFilePath: ToSourceFilePath;
   private findWorkspacePackageTarget: WorkspacePackageTargetHandler | undefined;
   private findWorkspaceNameByFilePath: (filePath: string) => string | undefined;
@@ -72,7 +73,7 @@ export class ProjectPrincipal {
     findWorkspacePackageTarget: WorkspacePackageTargetHandler | undefined,
     findWorkspaceNameByFilePath: (filePath: string) => string | undefined
   ) {
-    this.cache = new CacheConsultant('root', options);
+    this.cache = new GraphCacheConsultant(options);
     this.toSourceFilePath = toSourceFilePath;
     this.findWorkspacePackageTarget = findWorkspacePackageTarget;
     this.findWorkspaceNameByFilePath = findWorkspaceNameByFilePath;
@@ -113,13 +114,28 @@ export class ProjectPrincipal {
     this.paths.set(scope, scoped);
   }
 
+  private getCompilerCacheKeys() {
+    const keys = [];
+    for (const [extension, scoped] of this.scopedCompilers) {
+      for (const [workspace, compiler] of scoped) {
+        if (isSourceOnlyCompiler(compiler)) keys.push([extension, workspace, 'builtin']);
+        else {
+          const key = typeof compiler.cacheKey === 'function' ? compiler.cacheKey() : compiler.cacheKey;
+          if (typeof key !== 'string' || !key) return;
+          keys.push([extension, workspace, key]);
+        }
+      }
+    }
+    return keys;
+  }
+
   addRootDirs(rootDirs: string[] | undefined, scope: string) {
     if (!rootDirs?.length) return;
     const scoped = this.rootDirs.get(scope) ?? [];
     this.rootDirs.set(scope, compact([...scoped, ...rootDirs]));
   }
 
-  init() {
+  init(cacheContext?: string) {
     const scopedPaths =
       this.paths.size > 0 ? Array.from(this.paths, ([scope, paths]) => ({ scope, paths })) : undefined;
     const scopedRootDirs =
@@ -132,6 +148,8 @@ export class ProjectPrincipal {
       this.tsConfigFile
     );
     this.resolveGlobPattern = createGlobAliasResolver(scopedPaths);
+    const compilerKeys = this.getCompilerCacheKeys();
+    if (cacheContext && compilerKeys) this.cache.init(JSON.stringify([cacheContext, compilerKeys]));
   }
 
   private hasAcceptedExtension(filePath: string) {
@@ -272,9 +290,8 @@ export class ProjectPrincipal {
   }
 
   private getCachedFile(filePath: string) {
-    const cachedFile = this.cache.getCachedFile(filePath);
     const skipExports = this.skipExportsAnalysis.has(filePath) || !this.isReportExports;
-    return cachedFile?.skipExports === skipExports ? cachedFile : undefined;
+    return this.cache.getCachedFile(filePath, skipExports, this.resolveModule);
   }
 
   analyzeSourceFile(
@@ -303,10 +320,18 @@ export class ProjectPrincipal {
       ? (this._localRefsVisitor ??= buildVisitor(this.pluginVisitorObjects, true))
       : (this._visitor ??= buildVisitor(this.pluginVisitorObjects, false));
 
-    return _getImportsAndExports(
+    const resolutions = this.cache.enabled ? new Map<string, ReturnType<ResolveModule>>() : undefined;
+    const resolveModule: ResolveModule = resolutions
+      ? (specifier, containingFile) => {
+          const result = this.resolveModule(specifier, containingFile);
+          resolutions.set(specifier, result);
+          return result;
+        }
+      : this.resolveModule;
+    const file = _getImportsAndExports(
       filePath,
       sourceText,
-      this.resolveModule,
+      resolveModule,
       options,
       ignoreExportsUsedInFile,
       skipExports,
@@ -314,6 +339,8 @@ export class ProjectPrincipal {
       this.pluginVisitorObjects.length > 0 ? this.pluginCtx : undefined,
       parseResult
     );
+    if (resolutions) this.cache.setCachedFile(filePath, file, resolutions);
+    return file;
   }
 
   invalidateFile(filePath: string) {
@@ -321,12 +348,7 @@ export class ProjectPrincipal {
     this.cache.removeEntry(filePath);
   }
 
-  reconcileCache(graph: ModuleGraph) {
-    for (const [filePath, file] of graph) {
-      const fd = this.cache.getFileDescriptor(filePath);
-      if (!fd?.meta) continue;
-      fd.meta.data = { ...file, internalImportCache: undefined, importedBy: undefined };
-    }
+  reconcileCache() {
     this.cache.reconcile();
   }
 }

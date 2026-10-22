@@ -183,6 +183,25 @@ const config = {
 export default config;
 ```
 
+## Caching custom compilers
+
+Custom compilers are rerun when using `--cache` unless they provide a
+`cacheKey`. Use a key only when the output depends on the source, its path, and
+the inputs represented by that key:
+
+```ts
+const compiler = Object.assign((source: string) => source, {
+  cacheKey: 'compiler-v1',
+});
+
+export default { compilers: { template: compiler } };
+```
+
+The key may also be a function returning a string. Change the key when the
+compiler implementation, options, environment, or external inputs change. Custom
+compilers still require a full session rebuild after source edits, since they
+can read other files.
+
 ## Tracking non-source files
 
 To track any file extension that's not meant to compile to JavaScript, register

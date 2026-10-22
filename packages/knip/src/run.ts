@@ -1,3 +1,4 @@
+import { clearModuleResolutionCaches } from './typescript/resolve-module-names.ts';
 import { watch } from 'node:fs';
 import { createScriptParserContext } from './binaries/create-script-parser-context.ts';
 import { _getInputsFromScripts } from './binaries/index.ts';
@@ -12,8 +13,8 @@ import { ProjectPrincipal } from './ProjectPrincipal.ts';
 import watchReporter from './reporters/watch.ts';
 import type { MainOptions } from './util/create-options.ts';
 import { debugLogObject } from './util/debug.ts';
-import { flushGitignoreCache, initGitignoreCache } from './util/gitignore-cache.ts';
-import { flushGlobCache, initGlobCache } from './util/glob-cache.ts';
+import { disableGitignoreCache, flushGitignoreCache, initGitignoreCache } from './util/gitignore-cache.ts';
+import { disableGlobCache, flushGlobCache, initGlobCache } from './util/glob-cache.ts';
 import { getGitIgnoredHandler } from './util/glob-core.ts';
 import { isCatalog } from './util/input.ts';
 import { createManifest } from './util/package-json.ts';
@@ -28,10 +29,14 @@ export const run = async (options: MainOptions) => {
   debugLogObject('*', 'Included issue types', options.includedIssueTypes);
 
   clearResolverCache();
+  clearModuleResolutionCaches();
 
   if (options.isCache) {
     initGlobCache(options.cacheLocation);
     initGitignoreCache(options.cacheLocation);
+  } else {
+    disableGlobCache();
+    disableGitignoreCache();
   }
 
   const chief = new ConfigurationChief(options);
