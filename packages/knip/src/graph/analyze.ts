@@ -10,6 +10,7 @@ import {
   hasStrictlyEnumReferences,
 } from '../graph-explorer/utils.ts';
 import type { IssueCollector } from '../IssueCollector.ts';
+import { liveContainingExports } from '../graph-explorer/operations/live-containing-exports.ts';
 import traceReporter from '../reporters/trace.ts';
 import type { CyclesConfig, IgnoreExportsUsedInFile } from '../types/config.ts';
 import type { Export, ExportMember, ImportMaps, ModuleGraph } from '../types/module-graph.ts';
@@ -65,39 +66,32 @@ export const analyze = async ({
   const shouldIgnore = getShouldIgnoreHandler(options.isProduction);
   const shouldIgnoreTags = getShouldIgnoreTagHandler(options.tags);
 
-  const explorer = createGraphExplorer(graph, entryPaths);
+  const explorer = createGraphExplorer(graph, entryPaths, options.isSession || options.isWatch);
+  const containingExports = new Map<string, Set<string>>();
 
   const isReferencedInUsedExport = (
     exportedItem: Export,
     filePath: string,
     includeEntryExports: boolean,
-    ignoreExportsUsedInFile: IgnoreExportsUsedInFile,
-    visited?: Set<string>
+    ignoreExportsUsedInFile: IgnoreExportsUsedInFile
   ) => {
     if (!exportedItem.referencedIn) return false;
+    const cached = containingExports.get(filePath);
+    if (cached) return cached.has(exportedItem.identifier);
     const file = graph.get(filePath);
     if (!file) return false;
-    for (const containingExport of exportedItem.referencedIn) {
-      const inExport = file.exports.get(containingExport);
-      if (!inExport) continue;
-      if (
-        (inExport.type === 'type' || inExport.type === 'interface' || inExport.type === 'enum') &&
-        !shouldCountRefs(ignoreExportsUsedInFile, inExport.type)
-      ) {
-        continue;
-      }
-      if (inExport.hasRefsInFile || inExport.isRegistered) return true;
-      if (explorer.isReferenced(filePath, containingExport, { traverseEntries: includeEntryExports })[0]) return true;
-      if (inExport.referencedIn) {
-        const v = visited ?? new Set();
-        if (!v.has(containingExport)) {
-          v.add(containingExport);
-          if (isReferencedInUsedExport(inExport, filePath, includeEntryExports, ignoreExportsUsedInFile, v))
-            return true;
-        }
-      }
-    }
-    return false;
+    const live = liveContainingExports(
+      file.exports,
+      item =>
+        (item.type !== 'type' && item.type !== 'interface' && item.type !== 'enum') ||
+        !!shouldCountRefs(ignoreExportsUsedInFile, item.type),
+      (identifier, item) =>
+        item.hasRefsInFile ||
+        item.isRegistered ||
+        explorer.isReferenced(filePath, identifier, { traverseEntries: includeEntryExports })[0]
+    );
+    containingExports.set(filePath, live);
+    return live.has(exportedItem.identifier);
   };
 
   const getMemberIssues = (
@@ -153,6 +147,7 @@ export const analyze = async ({
   };
 
   const analyzeGraph = async () => {
+    containingExports.clear();
     if (options.isReportValues || options.isReportTypes) {
       streamer.cast('Connecting the dots');
 

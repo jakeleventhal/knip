@@ -114,6 +114,13 @@ export class ProjectPrincipal {
     this.paths.set(scope, scoped);
   }
 
+  hasOnlySourceCompilers() {
+    for (const scoped of this.scopedCompilers.values()) {
+      for (const compiler of scoped.values()) if (!isSourceOnlyCompiler(compiler)) return false;
+    }
+    return true;
+  }
+
   private getCompilerCacheKeys() {
     const keys = [];
     for (const [extension, scoped] of this.scopedCompilers) {
@@ -127,6 +134,18 @@ export class ProjectPrincipal {
       }
     }
     return keys;
+  }
+
+  collectConfigurationImports(paths: Set<string>) {
+    for (const filePath of paths) {
+      if (!DEFAULT_EXTENSIONS.has(extname(filePath)) || isInNodeModules(filePath)) continue;
+      const source = this.fileManager.readRawFile(filePath);
+      if (source === undefined) continue;
+      for (const specifier of extractSpecifiers(_parseFile(filePath, source), source, filePath)) {
+        const resolved = this.resolveSpecifier(specifier, filePath);
+        if (resolved && !isInNodeModules(resolved)) paths.add(resolved);
+      }
+    }
   }
 
   addRootDirs(rootDirs: string[] | undefined, scope: string) {

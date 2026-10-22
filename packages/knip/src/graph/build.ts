@@ -82,7 +82,8 @@ export async function build({
 
   const toSourceFilePaths = getToSourcePathsHandler(chief);
 
-  const addIssue = (issue: Issue) => collector.addIssue(issue) && options.isWatch && collector.retainIssue(issue);
+  const addIssue = (issue: Issue) =>
+    collector.addIssue(issue) && (options.isWatch || options.isSession) && collector.retainIssue(issue);
 
   const externalRefsFromInputs: ExternalRefsFromInputs | undefined = options.isSession ? new Map() : undefined;
 
@@ -648,8 +649,14 @@ export async function build({
     }
   }
 
+  const configFiles = new Set<string>();
+  for (const configs of configFilesMap.values()) {
+    for (const paths of configs.values()) for (const filePath of paths) configFiles.add(filePath);
+  }
+
   return {
     graph,
+    configFiles,
     entryPaths,
     analyzedFiles,
     unreferencedFiles,

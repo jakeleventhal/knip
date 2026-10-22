@@ -1,4 +1,3 @@
-import { clearModuleResolutionCaches } from './typescript/resolve-module-names.ts';
 import { watch } from 'node:fs';
 import { createScriptParserContext } from './binaries/create-script-parser-context.ts';
 import { _getInputsFromScripts } from './binaries/index.ts';
@@ -15,6 +14,7 @@ import type { MainOptions } from './util/create-options.ts';
 import { debugLogObject } from './util/debug.ts';
 import { disableGitignoreCache, flushGitignoreCache, initGitignoreCache } from './util/gitignore-cache.ts';
 import { disableGlobCache, flushGlobCache, initGlobCache } from './util/glob-cache.ts';
+import { clearModuleResolutionCaches } from './typescript/resolve-module-names.ts';
 import { getGitIgnoredHandler } from './util/glob-core.ts';
 import { isCatalog } from './util/input.ts';
 import { createManifest } from './util/package-json.ts';
@@ -93,18 +93,19 @@ export const run = async (options: MainOptions) => {
     workspaces.map(w => ({ pkgName: w.pkgName, name: w.name, config: w.config, ancestors: w.ancestors }))
   );
 
-  const { graph, entryPaths, analyzedFiles, unreferencedFiles, analyzeSourceFile, enabledPluginsStore } = await build({
-    chief,
-    collector,
-    counselor,
-    deputy,
-    principal,
-    isGitIgnored,
-    scriptParserContext,
-    streamer,
-    workspaces,
-    options,
-  });
+  const { graph, configFiles, entryPaths, analyzedFiles, unreferencedFiles, analyzeSourceFile, enabledPluginsStore } =
+    await build({
+      chief,
+      collector,
+      counselor,
+      deputy,
+      principal,
+      isGitIgnored,
+      scriptParserContext,
+      streamer,
+      workspaces,
+      options,
+    });
 
   const reAnalyze = await analyze({
     analyzedFiles,
@@ -139,6 +140,7 @@ export const run = async (options: MainOptions) => {
       analyze: reAnalyze,
       principal,
       graph,
+      configurationPaths: configFiles,
       isIgnored,
       onFileChange,
       unreferencedFiles,
