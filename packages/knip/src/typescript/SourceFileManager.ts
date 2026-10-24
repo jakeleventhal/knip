@@ -4,7 +4,8 @@ import type { Compilers } from '../compilers/types.ts';
 import { FOREIGN_FILE_EXTENSIONS } from '../constants.ts';
 import { debugLog } from '../util/debug.ts';
 import { CompilerError, ConfigurationError } from '../util/errors.ts';
-import { extname, isInternal } from '../util/path.ts';
+import { fileFingerprint } from '../util/file-fingerprint.ts';
+import { dirname, extname, isInternal, toAbsolute } from '../util/path.ts';
 
 interface SourceFileManagerOptions {
   compilers: Compilers;
@@ -13,6 +14,7 @@ interface SourceFileManagerOptions {
 
 export class SourceFileManager {
   sourceTextCache = new Map<string, string | Promise<string>>();
+  compilerInputs = new Map<string, Map<string, string | undefined>>();
   compilers: Compilers;
   private rawContentHashes = new Map<string, string>();
   private isSession: boolean;
@@ -40,15 +42,24 @@ export class SourceFileManager {
     if (!compiler) return this.cacheSourceText(filePath, contents, contents);
 
     let result;
+    let compilerInputs: Map<string, string | undefined> | undefined;
     try {
-      result = compiler(contents, filePath);
+      this.compilerInputs.delete(filePath);
+      result = compiler(contents, filePath, {
+        readFile: path => {
+          const input = toAbsolute(path, dirname(filePath));
+          compilerInputs ??= new Map();
+          if (!compilerInputs.has(input)) compilerInputs.set(input, fileFingerprint(input));
+          return this.readRawFile(input);
+        },
+      });
       if (result !== null && (typeof result === 'object' || typeof result === 'function')) {
         const pending = Promise.resolve(result).then(
           result => {
             const isCurrent = this.sourceTextCache.get(filePath) === pending;
             if (isCurrent) this.sourceTextCache.delete(filePath);
             const sourceText = this.validateCompilerResult(result, filePath, ext);
-            if (isCurrent) this.cacheSourceText(filePath, sourceText, contents);
+            if (isCurrent) this.cacheSourceText(filePath, sourceText, contents, compilerInputs);
             debugLog('*', `Compiled ${filePath}`);
             return sourceText;
           },
@@ -65,11 +76,12 @@ export class SourceFileManager {
     }
     const sourceText = this.validateCompilerResult(result, filePath, ext);
     debugLog('*', `Compiled ${filePath}`);
-    return this.cacheSourceText(filePath, sourceText, contents);
+    return this.cacheSourceText(filePath, sourceText, contents, compilerInputs);
   }
 
   invalidate(filePath: string) {
     this.sourceTextCache.delete(filePath);
+    this.compilerInputs.delete(filePath);
     this.rawContentHashes.delete(filePath);
   }
 
@@ -88,8 +100,14 @@ export class SourceFileManager {
     }
   }
 
-  private cacheSourceText(filePath: string, sourceText: string, contents: string): string {
+  private cacheSourceText(
+    filePath: string,
+    sourceText: string,
+    contents: string,
+    compilerInputs?: Map<string, string | undefined>
+  ): string {
     this.sourceTextCache.set(filePath, sourceText);
+    if (compilerInputs) this.compilerInputs.set(filePath, compilerInputs);
     if (this.isSession) this.rawContentHashes.set(filePath, createHash('sha1').update(contents).digest('hex'));
     return sourceText;
   }

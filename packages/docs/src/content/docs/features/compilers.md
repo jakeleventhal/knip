@@ -77,12 +77,26 @@ Since compilers are functions, the Knip configuration file must be a dynamic
 The compiler function interface is straightforward. Text in, text out:
 
 ```ts
-(source: string, filename: string) => string | PromiseLike<string>;
+(
+  source: string,
+  filename: string,
+  context: { readFile: (path: string) => string | undefined }
+) => string | PromiseLike<string>;
 ```
 
 Return a string or a Promise-like value that resolves to a string. Knip compiles
 files on demand and awaits asynchronous results; the `async` keyword is
 optional.
+
+When a compiler reads another file, use the third argument's `readFile` callback
+to include that file in persistent cache validation. Paths are resolved relative
+to the compiled file. The callback returns UTF-8 text, or `undefined` if the
+file cannot be read. Creating, changing, or deleting a recorded input causes the
+compiled file to be analyzed again on the next cached run.
+
+Existing two-argument compilers continue to work. Reads through other APIs are
+not tracked, and this callback does not add auxiliary files to the session's
+watch inputs.
 
 ### Examples
 

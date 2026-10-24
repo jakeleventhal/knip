@@ -24,6 +24,9 @@ import type { MainOptions } from './util/create-options.ts';
 import { timerify } from './util/Performance.ts';
 import { extname, isInNodeModules, toAbsolute } from './util/path.ts';
 import type { ToSourceFilePath, WorkspacePackageTargetHandler } from './util/to-source-path.ts';
+import { fingerprintsMatch } from './util/file-fingerprint.ts';
+
+type CachedFile = FileNode & { compilerInputs?: Map<string, string | undefined> };
 
 export class ProjectPrincipal {
   entryPaths = new Set<string>();
@@ -52,7 +55,7 @@ export class ProjectPrincipal {
   private tsConfigFile: string | undefined;
   private extensions = new Set(DEFAULT_EXTENSIONS);
 
-  cache: CacheConsultant<FileNode>;
+  cache: CacheConsultant<CachedFile>;
   toSourceFilePath: ToSourceFilePath;
   private findWorkspacePackageTarget: WorkspacePackageTargetHandler | undefined;
   private findWorkspaceNameByFilePath: (filePath: string) => string | undefined;
@@ -96,9 +99,9 @@ export class ProjectPrincipal {
       } else {
         const workspaceCompilers = new Map([[workspaceName, compiler]]);
         this.scopedCompilers.set(ext, workspaceCompilers);
-        this.compilers.set(ext, (source, filePath) => {
+        this.compilers.set(ext, (source, filePath, context) => {
           const owner = this.findWorkspaceNameByFilePath(filePath);
-          return ((owner ? workspaceCompilers.get(owner) : undefined) ?? compiler)(source, filePath);
+          return ((owner ? workspaceCompilers.get(owner) : undefined) ?? compiler)(source, filePath, context);
         });
         this.extensions.add(ext);
       }
@@ -289,6 +292,7 @@ export class ProjectPrincipal {
 
   private getCachedFile(filePath: string) {
     const cachedFile = this.cache.getCachedFile(filePath);
+    if (cachedFile?.compilerInputs && !fingerprintsMatch(cachedFile.compilerInputs)) return;
     const skipExports = this.skipExportsAnalysis.has(filePath) || !this.isReportExports;
     return cachedFile?.skipExports === skipExports ? this.copyCachedFile(cachedFile) : undefined;
   }
@@ -341,7 +345,14 @@ export class ProjectPrincipal {
       this.pluginVisitorObjects.length > 0 ? this.pluginCtx : undefined,
       parseResult
     );
-    if (this.options.isCache) this.cache.setFileData(filePath, this.copyCachedFile(file));
+    if (this.options.isCache) {
+      const compilerInputs = this.fileManager.compilerInputs.get(filePath);
+      if (!compilerInputs || fingerprintsMatch(compilerInputs)) {
+        this.cache.setFileData(filePath, { ...this.copyCachedFile(file), compilerInputs });
+      } else {
+        this.cache.removeEntry(filePath);
+      }
+    }
     return file;
   }
 
