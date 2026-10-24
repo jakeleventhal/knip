@@ -85,9 +85,12 @@ export const getCachedGlob = (key: string): string[] | undefined => {
 
 // Delegate to a native fs function while recording the directory it reads. The native overload +
 // `__promisify__` types don't survive a plain wrapper, so bridge them at this single boundary.
-const trackReads = <T>(native: T, dirs: Set<string>): T => {
+const trackReads = <T>(native: T, dirs: Set<string>, onRead?: (path: string) => void): T => {
   const tracked = function (this: unknown, path: unknown, ...rest: unknown[]) {
-    if (typeof path === 'string') dirs.add(path);
+    if (typeof path === 'string') {
+      onRead?.(path);
+      dirs.add(path);
+    }
     return (native as (...args: unknown[]) => unknown).call(this, path, ...rest);
   };
   return tracked as unknown as T;
@@ -98,9 +101,12 @@ const trackReads = <T>(native: T, dirs: Set<string>): T => {
  * each traversed directory exactly once — so the recorded set is the complete set of directories whose
  * contents can affect the result, including ones that matched nothing.
  */
-export const createDirTracker = (): { dirs: Set<string>; fs: FileSystemAdapter } => {
+export const createDirTracker = (onRead?: (path: string) => void): { dirs: Set<string>; fs: FileSystemAdapter } => {
   const dirs = new Set<string>();
-  return { dirs, fs: { readdir: trackReads(fs.readdir, dirs), readdirSync: trackReads(fs.readdirSync, dirs) } };
+  return {
+    dirs,
+    fs: { readdir: trackReads(fs.readdir, dirs, onRead), readdirSync: trackReads(fs.readdirSync, dirs, onRead) },
+  };
 };
 
 const stripTrailingSlash = (dir: string) => (dir.length > 1 && dir.endsWith('/') ? dir.slice(0, -1) : dir);

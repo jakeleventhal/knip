@@ -142,6 +142,7 @@ export class ProjectPrincipal {
       'root',
       this.options,
       JSON.stringify([
+        'compiler-inputs-v1',
         cacheContext,
         scopedPaths,
         scopedRootDirs,

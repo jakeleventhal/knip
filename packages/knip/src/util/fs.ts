@@ -5,8 +5,10 @@ import { parse as parseTOML } from 'smol-toml';
 import stripJsonComments from 'strip-json-comments';
 import { LoaderError } from './errors.ts';
 import { extname, join, toPosix } from './path.ts';
+import { getInputTracker } from './input-tracker.ts';
 
 export const isDirectory = (cwdOrPath: string, name?: string) => {
+  getInputTracker()?.(name ? join(cwdOrPath, name) : cwdOrPath);
   try {
     return statSync(name ? join(cwdOrPath, name) : cwdOrPath, { throwIfNoEntry: false })?.isDirectory() ?? false;
   } catch {
@@ -15,6 +17,7 @@ export const isDirectory = (cwdOrPath: string, name?: string) => {
 };
 
 export const isFile = (cwdOrPath: string, name?: string) => {
+  getInputTracker()?.(name ? join(cwdOrPath, name) : cwdOrPath);
   try {
     return statSync(name ? join(cwdOrPath, name) : cwdOrPath, { throwIfNoEntry: false })?.isFile() ?? false;
   } catch {
@@ -35,6 +38,7 @@ export const findFileWithExtensions = (basePath: string, extensions: string[]): 
 };
 
 export const loadFile = async (filePath: string) => {
+  getInputTracker()?.(filePath);
   try {
     const contents = await readFile(filePath);
     return contents.toString();

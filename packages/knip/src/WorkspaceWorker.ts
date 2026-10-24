@@ -42,6 +42,7 @@ import { basename, dirname, extname, join, relative, toRelative } from './util/p
 import { extractPatternExtensions } from './util/pattern-extensions.ts';
 import { formatCauseMessage } from './util/errors.ts';
 import { fileFingerprint, fingerprintsMatch } from './util/file-fingerprint.ts';
+import { withInputTracking } from './util/input-tracker.ts';
 import { logError } from './util/log.ts';
 import { loadConfigForPlugin } from './util/plugin.ts';
 import { ELLIPSIS } from './util/string.ts';
@@ -304,6 +305,7 @@ export class WorkspaceWorker {
       this.options,
       isCache
         ? JSON.stringify([
+            'tracked-helper-inputs-v1',
             this.dir,
             this.options.cwd,
             this.config,
@@ -503,9 +505,12 @@ export class WorkspaceWorker {
               typeof plugin.isLoadConfig === 'function' ? plugin.isLoadConfig(resolveOpts, this.dependencies) : true;
             if (isLoad) {
               try {
-                const localConfig = await loadConfigForPlugin(configFilePath, plugin, resolveOpts, pluginName);
-                if (localConfig) {
-                  const inputs = await plugin.resolveConfig(localConfig, resolveOpts);
+                const load = async () => {
+                  const localConfig = await loadConfigForPlugin(configFilePath, plugin, resolveOpts, pluginName);
+                  if (localConfig) return plugin.resolveConfig?.(localConfig, resolveOpts);
+                };
+                const inputs = isCache ? await withInputTracking(reads, load) : await load();
+                if (inputs) {
                   if (plugin.isFilterTransitiveDependencies && !isManifest) {
                     filterTransitiveDependencies(inputs, configFilePath, readFile);
                   }

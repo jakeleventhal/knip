@@ -12,6 +12,9 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import test, { type TestContext } from 'node:test';
+import { isFile, loadFile } from '../../src/util/fs.ts';
+import { _dirGlob, _glob, _syncGlob } from '../../src/util/glob.ts';
+import { initGlobCache, flushGlobCache } from '../../src/util/glob-cache.ts';
 import { WorkspaceWorker } from '../../src/WorkspaceWorker.ts';
 import { Plugins } from '../../src/plugins.ts';
 import type { JSONReport } from '../../src/reporters/json.ts';
@@ -19,7 +22,7 @@ import type { Plugin, WorkspaceConfiguration } from '../../src/types/config.ts';
 import type { MainOptions } from '../../src/util/create-options.ts';
 import { toConfig, toDependency, toEntry } from '../../src/util/input.ts';
 import { createManifest } from '../../src/util/package-json.ts';
-import { join, toPosix } from '../../src/util/path.ts';
+import { join, toAbsolute, toPosix } from '../../src/util/path.ts';
 import { createOptions } from '../helpers/create-options.ts';
 import { resolve } from '../helpers/resolve.ts';
 
@@ -349,3 +352,64 @@ test('Executable plugin configs react to environment changes and stay cached on 
     assert.equal(readFileSync(join(cacheLocation, name)).includes(Buffer.from('private-value')), false);
   }
 });
+
+test('Plugin cache observes file helper reads inside resolveConfig', async t => {
+  let calls = 0;
+  const { cwd, run } = createRunner(t, {
+    resolveConfig: async (_config, options) => {
+      calls++;
+      const input = join(options.cwd, 'selection.txt');
+      return [toEntry(isFile(input) ? await loadFile(input) : 'missing.ts')];
+    },
+  });
+  assert.ok((await run()).some(input => input.specifier === 'missing.ts'));
+  await run();
+  assert.equal(calls, 1);
+  const selector = join(cwd, 'selection.txt');
+  writeFileSync(selector, 'apple.ts');
+  assert.ok((await run()).some(input => input.specifier === 'apple.ts'));
+  await run();
+  assert.equal(calls, 2);
+  writeFileSync(selector, 'banana.ts');
+  assert.ok((await run()).some(input => input.specifier === 'banana.ts'));
+  rmSync(selector);
+  assert.ok((await run()).some(input => input.specifier === 'missing.ts'));
+});
+
+for (const mode of ['async', 'sync', 'directories']) {
+  test(`Plugin cache observes initially empty ${mode} discovery inside resolveConfig`, async t => {
+    let calls = 0;
+    const { cwd, cacheLocation, run } = createRunner(t, {
+      resolveConfig: async (_config, options) => {
+        calls++;
+        const globOptions = { cwd: options.cwd, patterns: ['nested/configs/*'], gitignore: false };
+        const paths =
+          mode === 'sync' ? _syncGlob(globOptions) : await (mode === 'directories' ? _dirGlob : _glob)(globOptions);
+        const inputs = [];
+        for (const path of paths) inputs.push(toEntry(path));
+        return inputs;
+      },
+    });
+    mkdirSync(cacheLocation);
+    mkdirSync(join(cwd, 'nested'));
+    const cachedRun = async () => {
+      initGlobCache(cacheLocation);
+      const result = await run();
+      flushGlobCache();
+      return result;
+    };
+    assert.deepEqual(await cachedRun(), []);
+    assert.deepEqual(await cachedRun(), []);
+    assert.equal(calls, 1);
+    mkdirSync(join(cwd, 'nested', 'configs'));
+    const child = join(cwd, 'nested', 'configs', 'child.ts');
+    if (mode === 'directories') mkdirSync(child);
+    else writeFileSync(child, 'export {};');
+    assert.ok((await cachedRun()).some(input => toAbsolute(input.specifier.replace(/\/$/, ''), cwd) === child));
+    await cachedRun();
+    assert.equal(calls, 2);
+    rmSync(child, { recursive: true });
+    assert.deepEqual(await cachedRun(), []);
+    assert.equal(calls, 3);
+  });
+}

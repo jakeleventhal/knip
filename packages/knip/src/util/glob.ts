@@ -10,6 +10,7 @@ import {
 import { getGitignoreFingerprint, glob, reconcileGitignoredPaths } from './glob-core.ts';
 import { timerify } from './Performance.ts';
 import { isAbsolute, join, relative } from './path.ts';
+import { getInputTracker } from './input-tracker.ts';
 
 interface GlobOptions {
   cwd: string;
@@ -57,16 +58,18 @@ const defaultGlob = async ({ cwd, dir = cwd, patterns, gitignore = true, label }
   if (globPatterns[0].startsWith('!')) return [];
 
   const cacheEnabled = isGlobCacheEnabled();
+  const onRead = getInputTracker();
+  onRead?.(dir);
   const gitignoreFingerprint = gitignore ? getGitignoreFingerprint() : '';
   const cacheKey = cacheEnabled
     ? computeGlobCacheKey({ patterns: globPatterns, cwd, dir, gitignore, gitignoreFingerprint })
     : '';
-  if (cacheEnabled) {
+  if (cacheEnabled && !onRead) {
     const cached = getCachedGlob(cacheKey);
     if (cached) return gitignore ? reconcileGitignoredPaths(cached, cwd) : cached;
   }
 
-  const tracker = cacheEnabled ? createDirTracker() : undefined;
+  const tracker = cacheEnabled || onRead ? createDirTracker(onRead) : undefined;
 
   const paths = await glob(globPatterns, {
     cwd,
@@ -85,15 +88,17 @@ const defaultGlob = async ({ cwd, dir = cwd, patterns, gitignore = true, label }
 
 const syncGlob = ({ cwd, patterns }: { cwd: string; patterns: string | string[] }) => {
   const cacheEnabled = isGlobCacheEnabled();
+  const onRead = getInputTracker();
+  onRead?.(cwd);
   const patternList = [patterns].flat().map(pattern => prepend(pattern, cwd, ''));
   const cacheKey = cacheEnabled
     ? computeGlobCacheKey({ patterns: patternList, cwd, dir: cwd, gitignore: false, gitignoreFingerprint: '' })
     : '';
-  if (cacheEnabled) {
+  if (cacheEnabled && !onRead) {
     const cached = getCachedGlob(cacheKey);
     if (cached) return cached;
   }
-  const tracker = cacheEnabled ? createDirTracker() : undefined;
+  const tracker = cacheEnabled || onRead ? createDirTracker(onRead) : undefined;
   const paths = globSync(patternList, {
     cwd,
     absolute: true,
@@ -105,11 +110,14 @@ const syncGlob = ({ cwd, patterns }: { cwd: string; patterns: string | string[] 
   return paths;
 };
 
-const dirGlob = async ({ cwd, patterns, gitignore = true }: GlobOptions) =>
-  glob(
+const dirGlob = async ({ cwd, patterns, gitignore = true }: GlobOptions) => {
+  const onRead = getInputTracker();
+  onRead?.(cwd);
+  return glob(
     patterns.map(pattern => prepend(pattern, cwd, '')),
-    { cwd, dir: cwd, onlyDirectories: true, gitignore }
+    { cwd, dir: cwd, onlyDirectories: true, gitignore, fs: onRead ? createDirTracker(onRead).fs : undefined }
   );
+};
 
 export const _glob = timerify(defaultGlob);
 
