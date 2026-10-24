@@ -12,7 +12,7 @@ import { hasErrorCause } from './errors.ts';
 import { isFile } from './fs.ts';
 import { logError } from './log.ts';
 import { updateImportMap } from './module-graph.ts';
-import { toAbsolute, toPosix, toRelative } from './path.ts';
+import { extname, toAbsolute, toPosix, toRelative } from './path.ts';
 import { clearModuleResolutionCaches } from '../typescript/resolve-module-names.ts';
 import { clearGlobCache } from './glob-cache.ts';
 import { clearResolverCache } from './resolve.ts';
@@ -46,6 +46,8 @@ const createUpdate = (options: { startTime: number }) => {
   return { duration, mem };
 };
 
+type RebuildSession = () => Promise<ReturnType<typeof createUpdate>>;
+
 export const getSessionHandler = async (
   options: MainOptions,
   {
@@ -65,8 +67,9 @@ export const getSessionHandler = async (
   const added = new Set<string>();
   const deleted = new Set<string>();
   const modified = new Set<string>();
+  let needsRebuild = false;
 
-  const processFileChanges = async (changes: WatchChange[]) => {
+  const processFileChanges = async (changes: WatchChange[], rebuild?: RebuildSession) => {
     const startTime = performance.now();
     let hasRelevantChanges = false;
 
@@ -87,7 +90,7 @@ export const getSessionHandler = async (
         case 'added':
           principal.addProjectPath(filePath);
           deleted.delete(filePath);
-          if (principal.projectPaths.has(filePath)) added.add(filePath);
+          if (rebuild || principal.projectPaths.has(filePath)) added.add(filePath);
           debugLog(workspace.name, `Watcher: + ${relativePath}`);
           break;
         case 'deleted':
@@ -111,13 +114,20 @@ export const getSessionHandler = async (
       principal.invalidateFile(filePath);
     }
 
-    if (!hasRelevantChanges || (added.size === 0 && deleted.size === 0 && modified.size === 0)) return;
+    if (!hasRelevantChanges) return;
+    if (needsRebuild && rebuild) return rebuild();
+    if (added.size === 0 && deleted.size === 0 && modified.size === 0) return;
 
     let incremental = added.size === 0 && deleted.size === 0;
     if (incremental) {
       for (const filePath of modified) {
         const file = graph.get(filePath);
-        if (!file || !analyzedFiles.has(filePath) || !isIncrementalFile(file)) {
+        if (
+          !file ||
+          !analyzedFiles.has(filePath) ||
+          !isIncrementalFile(file) ||
+          (rebuild && principal.compilers.has(extname(filePath)))
+        ) {
           incremental = false;
           break;
         }
@@ -149,6 +159,11 @@ export const getSessionHandler = async (
       const update = createUpdate({ startTime });
       if (onFileChange) onFileChange(Object.assign({ issues: getIssues().issues }, update));
       return update;
+    }
+
+    if (rebuild) {
+      needsRebuild = true;
+      return rebuild();
     }
 
     clearResolverCache();
@@ -229,8 +244,8 @@ export const getSessionHandler = async (
 
   const clearSourceText = () => principal.fileManager.sourceTextCache.clear();
   let pending = Promise.resolve();
-  const handleFileChanges = (changes: WatchChange[]) => {
-    const update = pending.then(() => processFileChanges(changes));
+  const handleFileChanges = (changes: WatchChange[], rebuild?: RebuildSession) => {
+    const update = pending.then(() => processFileChanges(changes, rebuild));
     pending = update.then(clearSourceText, clearSourceText);
     return update;
   };
