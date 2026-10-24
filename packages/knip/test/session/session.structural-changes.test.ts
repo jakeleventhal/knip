@@ -103,7 +103,7 @@ for (const isCache of [false, true]) {
     await write('src/app.ts', 'export {};\n');
     await write('src/other.ts', 'export {};\n');
     const session = await start();
-    assert.deepEqual(Object.keys(session.getIssues().issues.files), ['src/app.ts', 'src/other.ts']);
+    assert.deepEqual(Object.keys(session.getIssues().issues.files).sort(), ['src/app.ts', 'src/other.ts']);
 
     await write('index.html', '<script type="module" src="/src/app.ts"></script>');
     await session.handleFileChanges([{ type: 'added', filePath: 'index.html' }]);
@@ -118,7 +118,7 @@ for (const isCache of [false, true]) {
     await rm(join(cwd, 'index.html'));
     await session.handleFileChanges([{ type: 'deleted', filePath: 'index.html' }]);
     await assertFresh(session);
-    assert.deepEqual(Object.keys(session.getIssues().issues.files), ['src/app.ts', 'src/other.ts']);
+    assert.deepEqual(Object.keys(session.getIssues().issues.files).sort(), ['src/app.ts', 'src/other.ts']);
   });
 }
 
