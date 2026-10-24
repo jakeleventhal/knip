@@ -90,7 +90,7 @@ export const getSessionHandler = async (
         case 'added':
           principal.addProjectPath(filePath);
           deleted.delete(filePath);
-          if (principal.projectPaths.has(filePath)) added.add(filePath);
+          if (rebuild || principal.projectPaths.has(filePath)) added.add(filePath);
           debugLog(workspace.name, `Watcher: + ${relativePath}`);
           break;
         case 'deleted':

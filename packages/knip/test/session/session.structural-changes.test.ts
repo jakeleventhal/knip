@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import test, { type TestContext } from 'node:test';
 import { ProjectPrincipal } from '../../src/ProjectPrincipal.ts';
@@ -91,6 +91,34 @@ for (const isCache of [false, true]) {
     await session.handleFileChanges([{ type: 'deleted', filePath: 'missing.ts' }]);
     await assertFresh(session);
     assert.deepEqual(Object.keys(session.getIssues().issues.unresolved['index.ts']), ['./missing.ts']);
+  });
+
+  test(`plugin discovery follows added, modified and deleted non-source inputs (cache=${isCache})`, async t => {
+    const { cwd, write, start, assertFresh } = await setup(t, isCache);
+    await write(
+      'package.json',
+      JSON.stringify({ name: 'vite-discovery', knip: { entry: [], project: ['src/**/*.ts'], vite: true } })
+    );
+    await mkdir(join(cwd, 'src'));
+    await write('src/app.ts', 'export {};\n');
+    await write('src/other.ts', 'export {};\n');
+    const session = await start();
+    assert.deepEqual(Object.keys(session.getIssues().issues.files), ['src/app.ts', 'src/other.ts']);
+
+    await write('index.html', '<script type="module" src="/src/app.ts"></script>');
+    await session.handleFileChanges([{ type: 'added', filePath: 'index.html' }]);
+    await assertFresh(session);
+    assert.deepEqual(Object.keys(session.getIssues().issues.files), ['src/other.ts']);
+
+    await write('index.html', '<script type="module" src="/src/other.ts"></script>');
+    await session.handleFileChanges([{ type: 'modified', filePath: 'index.html' }]);
+    await assertFresh(session);
+    assert.deepEqual(Object.keys(session.getIssues().issues.files), ['src/app.ts']);
+
+    await rm(join(cwd, 'index.html'));
+    await session.handleFileChanges([{ type: 'deleted', filePath: 'index.html' }]);
+    await assertFresh(session);
+    assert.deepEqual(Object.keys(session.getIssues().issues.files), ['src/app.ts', 'src/other.ts']);
   });
 }
 
