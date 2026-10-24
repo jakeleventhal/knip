@@ -144,7 +144,7 @@ test('a failed structural rebuild retries without reusing partially updated stat
   await session.handleFileChanges([{ type: 'modified', filePath: 'index.ts' }]);
   const fresh = await createSession(options);
   assert.deepEqual(session.getIssues(), fresh.getIssues());
-  assert.deepEqual(Object.keys(session.getIssues().issues.dependencies['package.json']), ['left-pad']);
+  assert.deepEqual(Object.keys(session.getIssues().issues.dependencies['package.json'] ?? {}), ['left-pad']);
 });
 
 test('structural rebuilds run the preprocessor once and retain the results object', async t => {
@@ -164,7 +164,7 @@ test('structural rebuilds run the preprocessor once and retain the results objec
   await session.handleFileChanges([{ type: 'modified', filePath: 'index.ts' }]);
   assert.strictEqual(session.getResults(), results);
   assert.equal(results.counters.total, 2);
-  assert.deepEqual(Object.keys(session.getIssues().issues.dependencies['package.json']), ['left-pad']);
+  assert.deepEqual(Object.keys(session.getIssues().issues.dependencies['package.json'] ?? {}), ['left-pad']);
 });
 
 test('added files still respect project patterns when a compiler is enabled', async t => {
